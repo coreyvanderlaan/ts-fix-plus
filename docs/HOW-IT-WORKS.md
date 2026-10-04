@@ -59,8 +59,12 @@ byte pattern that must occur exactly once, and leaving it alone if it doesn't:
 - **The Zelos title achievement** is requested as `TROPHY_ID_ZELOSZ_TITLE_COMPLET`; the missing
   `E` is added (found by TSFix).
 - **Window and focus.** Fullscreen is turned into a borderless window over the monitor (in
-  exclusive fullscreen the game minimises on Alt+Tab and stops responding); windowed mode gets a
-  borderless window centred on the monitor. The game never learns it lost focus (its window's
+  exclusive fullscreen the game minimises on Alt+Tab and stops responding). If the resolution
+  isn't the monitor's shape (16:9 on an ultrawide), the window keeps the picture's shape, centred,
+  and a black window behind it covers the rest (black bars). Windowed mode gets a borderless
+  window centred in the monitor's work area (above the taskbar), made smaller, keeping its
+  shape, if it doesn't fit. The game moves its window back to its full size a moment later, so
+  the window is held where TSFix+ put it (in `WM_WINDOWPOSCHANGING`). The game never learns it lost focus (its window's
   activation messages are held back and user32's `GetForegroundWindow`, `GetFocus` and
   `GetActiveWindow` report its window), so it keeps running in the background. Its window is
   never "always on top" (it became so by being placed behind an always-on-top overlay window),

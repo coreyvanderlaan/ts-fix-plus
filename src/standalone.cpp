@@ -16,12 +16,16 @@
 //   - each game frame waits for the GPU while a video plays (black blocks otherwise).
 // None of this runs when TSFix is loaded: it does these itself.
 #include "common.h"
+#include <algorithm>
 #include <cstring>
+#pragma comment(lib, "gdi32.lib")   // the black bars' brush
 
 bool gStandalone;
 
 static HWND gWindow;                                   // the game's window
 static std::unordered_map<HWND, WNDPROC> gGameProcs;   // its own window procedure
+static void keepBackdropBehind();                     // the black bars (below)
+static RECT gPlace;                                    // where TSFix+ put the window (empty: nowhere yet)
 
 // ---------------------------------------------------------------- patching
 
@@ -297,6 +301,9 @@ static LRESULT CALLBACK windowProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         return DefWindowProcA(w, msg, wp, lp);   // the frame only
     case WM_MOUSEACTIVATE:
         return MA_ACTIVATE;
+    case WM_WINDOWPOSCHANGED:
+        keepBackdropBehind();   // the black bars stay just behind the game
+        break;
     case WM_WINDOWPOSCHANGING: {
         // Never "always on top": another window brought to the front with Alt+Tab would be behind
         // the game, which would seem not to let go. The window becomes it by being asked for it,
@@ -307,6 +314,15 @@ static LRESULT CALLBACK windowProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
             bool special = after == HWND_TOP || after == HWND_BOTTOM || after == HWND_TOPMOST || after == HWND_NOTOPMOST;
             if (after == HWND_TOPMOST || (!special && (GetWindowLongA(after, GWL_EXSTYLE) & WS_EX_TOPMOST))) pos->hwndInsertAfter = HWND_NOTOPMOST;
         }
+        // The window stays where TSFix+ put it: the game moves it back to cover the monitor (or
+        // to its full size) a moment later, which undid the black bars and the taskbar fit.
+        if (pos && gPlace.right > gPlace.left && !IsIconic(w)) {
+            pos->x = gPlace.left;
+            pos->y = gPlace.top;
+            pos->cx = gPlace.right - gPlace.left;
+            pos->cy = gPlace.bottom - gPlace.top;
+            pos->flags &= ~(SWP_NOMOVE | SWP_NOSIZE);
+        }
         break;
     }
     }
@@ -314,25 +330,107 @@ static LRESULT CALLBACK windowProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     return it == gGameProcs.end() ? DefWindowProcA(w, msg, wp, lp) : CallWindowProcA(it->second, w, msg, wp, lp);
 }
 
-// Fullscreen: a borderless window over the whole monitor.
-static void coverMonitor(HWND w) {
+// The largest rectangle of the picture's shape (width x height) that fits in `area`, centred.
+static RECT fitted(const RECT& area, UINT width, UINT height) {
+    double aw = area.right - area.left, ah = area.bottom - area.top, scale = 1.0;
+    if (width && height) scale = std::min(aw / width, ah / height);
+    int w = (int)(width * scale + 0.5), h = (int)(height * scale + 0.5);
+    RECT r;
+    r.left = area.left + (int)(aw - w) / 2;
+    r.top = area.top + (int)(ah - h) / 2;
+    r.right = r.left + w;
+    r.bottom = r.top + h;
+    return r;
+}
+
+// Black bars: when the game's picture isn't the monitor's shape (a 16:9 resolution on an
+// ultrawide screen), the game's window keeps the picture's shape and a black window behind it
+// covers the rest of the monitor. It stays just behind the game's window, never takes focus, and
+// a click on it brings the game back to the front.
+static HWND gBackdrop;
+
+static LRESULT CALLBACK backdropProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+    case WM_LBUTTONDOWN:
+    case WM_RBUTTONDOWN:
+        if (gWindow) SetForegroundWindow(gWindow);
+        return 0;
+    }
+    return DefWindowProcA(w, msg, wp, lp);
+}
+
+static void keepBackdropBehind() {
+    if (gBackdrop && gWindow && IsWindowVisible(gBackdrop))
+        SetWindowPos(gBackdrop, gWindow, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+}
+
+static void showBackdrop(const RECT& m) {
+    // Only from the thread that owns the game's window: it handles the backdrop's messages too.
+    if (GetWindowThreadProcessId(gWindow, nullptr) != GetCurrentThreadId()) return;
+    if (!gBackdrop) {
+        WNDCLASSA c = {};
+        c.lpfnWndProc = backdropProc;
+        c.hInstance = GetModuleHandleA(nullptr);
+        c.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+        c.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        c.lpszClassName = "TSFixPlusBlackBars";
+        RegisterClassA(&c);
+        gBackdrop = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, c.lpszClassName, "", WS_POPUP, 0, 0, 0, 0, nullptr,
+                                    nullptr, c.hInstance, nullptr);
+    }
+    if (!gBackdrop) return;
+    SetWindowPos(gBackdrop, gWindow, m.left, m.top, m.right - m.left, m.bottom - m.top, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
+static void hideBackdrop() {
+    if (gBackdrop) ShowWindow(gBackdrop, SW_HIDE);
+}
+
+// Fullscreen: a borderless window over the monitor, in the picture's shape (black bars around it
+// if the shapes differ).
+static void coverMonitor(HWND w, UINT width, UINT height) {
     MONITORINFO mi = {sizeof mi};
     GetMonitorInfoA(MonitorFromWindow(w, MONITOR_DEFAULTTOPRIMARY), &mi);
     const RECT& m = mi.rcMonitor;
+    RECT r = fitted(m, width, height);
+    bool bars = r.right - r.left < m.right - m.left - 1 || r.bottom - r.top < m.bottom - m.top - 1;
+    if (!bars) r = m;
+    gPlace = r;
     SetWindowLongA(w, GWL_STYLE, WS_POPUP | WS_VISIBLE);
     SetWindowLongA(w, GWL_EXSTYLE, WS_EX_APPWINDOW);
-    SetWindowPos(w, HWND_NOTOPMOST, m.left, m.top, m.right - m.left, m.bottom - m.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    SetWindowPos(w, HWND_NOTOPMOST, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    if (bars) {
+        showBackdrop(m);
+        log("Fullscreen %ux%u on a %ldx%ld monitor: shown at %ldx%ld with black bars", width, height, m.right - m.left,
+            m.bottom - m.top, r.right - r.left, r.bottom - r.top);
+    } else {
+        hideBackdrop();
+    }
 }
 
-// Windowed: a window without a frame, centred on the monitor (as TSFix shows it).
+// Windowed: a window without a frame, centred in the part of the monitor the taskbar leaves free,
+// and made smaller (keeping its shape) if it doesn't fit there.
 static void borderlessCentred(HWND w, UINT width, UINT height) {
     MONITORINFO mi = {sizeof mi};
     GetMonitorInfoA(MonitorFromWindow(w, MONITOR_DEFAULTTOPRIMARY), &mi);
-    const RECT& m = mi.rcMonitor;
-    int mw = m.right - m.left, mh = m.bottom - m.top;
-    int ww = (int)width < mw ? (int)width : mw, wh = (int)height < mh ? (int)height : mh;
+    const RECT& a = mi.rcWork;
+    RECT r;
+    if ((int)width <= a.right - a.left && (int)height <= a.bottom - a.top) {
+        r.left = a.left + (a.right - a.left - (int)width) / 2;
+        r.top = a.top + (a.bottom - a.top - (int)height) / 2;
+        r.right = r.left + width;
+        r.bottom = r.top + height;
+    } else {
+        r = fitted(a, width, height);
+        log("Window %ux%u is larger than the free part of the screen: shown at %ldx%ld", width, height, r.right - r.left,
+            r.bottom - r.top);
+    }
+    hideBackdrop();
+    gPlace = r;
     SetWindowLongA(w, GWL_STYLE, WS_POPUP | WS_VISIBLE);
-    SetWindowPos(w, HWND_NOTOPMOST, m.left + (mw - ww) / 2, m.top + (mh - wh) / 2, ww, wh, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    SetWindowPos(w, HWND_NOTOPMOST, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
 }
 
 bool standaloneDeviceParams(D3DPRESENT_PARAMETERS* p, HWND focus) {
@@ -357,7 +455,7 @@ void standaloneDeviceCreated(D3DPRESENT_PARAMETERS* p, bool fullscreen, HRESULT 
     }
     p->Windowed = FALSE;   // the game reads its settings back
     if (SUCCEEDED(hr) && gWindow) {
-        coverMonitor(gWindow);
+        coverMonitor(gWindow, p->BackBufferWidth, p->BackBufferHeight);
         log("Fullscreen %ux%u, shown as a borderless window", p->BackBufferWidth, p->BackBufferHeight);
     }
 }

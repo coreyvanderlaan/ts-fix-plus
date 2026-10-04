@@ -24,8 +24,9 @@ TSFix+ 1.0 works on its own on the current Steam version of the game. It include
 patches never made (TSFix itself doesn't run on the current Steam version):
 
 - the game keeps running when you switch to another window, and **Alt+Tab** works;
-- fullscreen is shown as a **borderless window** over your screen, and windowed mode as a
-  borderless window;
+- fullscreen is shown as a **borderless window** over your screen (with black bars if the
+  resolution isn't your screen's shape, for example on an ultrawide), and windowed mode as a
+  borderless window centred above the taskbar;
 - the game's own stuttery 30 fps limiter is replaced by TSFix+'s exact pacing;
 - the **intro and other videos** play smoothly, without stutter or black blocks;
 - the **Zelos title achievement**, which never unlocks in the unmodded game, can be earned;
@@ -78,6 +79,9 @@ between smooth and the original 30 fps.
 - **The game's resolution:** set it to your screen's own resolution (for example 3840x2160 on a
   4K screen). A different size has to be scaled by Windows, which stops G-Sync/FreeSync from
   working and can make videos stutter.
+- **Ultrawide screens:** the game only draws 16:9. Use fullscreen with a 16:9 resolution of your
+  screen's height (2560x1440 on a 5120x1440 or 3440x1440 screen): it fills the height, with
+  black bars at the sides.
 - **HDR screens:** turn **Auto HDR** off for the game (**Settings → System → Display → Graphics**,
   choose `TOS.exe`, **Auto HDR: Off**). With it on, the start of the intro video can break up.
 - **G-Sync / FreeSync:** fine to leave on (tested with G-Sync).
